@@ -179,17 +179,19 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
   """LSTM decoder."""
 
-  def apply(self, init_state, inputs, teacher_force=False,
+  def apply(self, init_state, inputs, sample_probability=0.0,
             sample_temperature=1.0):
     # inputs.shape = (batch_size, seq_length, vocab_size).
-    vocab_size = inputs.shape[2]
+    batch_size, _, vocab_size = inputs.shape
     lstm_cell = nn.LSTMCell.partial(name='lstm')
     projection = nn.Dense.partial(features=vocab_size, name='projection')
 
     def decode_step_fn(carry, x):
       lstm_state, last_prediction = carry
-      if not teacher_force:
-        x = last_prediction
+      x = jnp.where(
+          jax.random.bernoulli(
+              nn.make_rng(), p=sample_probability, shape=(batch_size, 1)),
+          last_prediction, x)
       lstm_state, y = lstm_cell(lstm_state, x)
       logits = projection(y)
       predicted_tokens = jax.random.categorical(
@@ -219,7 +221,7 @@ class Seq2seq(nn.Module):
   def apply(self,
             encoder_inputs,
             decoder_inputs,
-            teacher_force=True,
+            sample_probability=0.0,
             sample_temperature=1.0,
             eos_id=1,
             hidden_size=512):
@@ -230,16 +232,17 @@ class Seq2seq(nn.Module):
         `[batch_size, max(encoder_input_lengths), vocab_size]`.
       decoder_inputs: padded batch of expected decoded sequences for teacher
         forcing, shaped `[batch_size, max(decoder_inputs_length), vocab_size]`.
-        When sampling (i.e., `teacher_force = False`), the initial time step is
-        forced into the model and samples are used for the following inputs. The
-        second dimension of this tensor determines how many steps will be
-        decoded, regardless of the value of `teacher_force`.
-      teacher_force: bool, whether to use `decoder_inputs` as input to the
-        decoder at every step. If False, only the first input is used, followed
-        by samples taken from the previous output logits.
+        The initial time step is forced into the model and samples are used for
+        the following inputs as determined by `sample_probability`. The second
+        dimension of this tensor determines how many steps will be
+        decoded, regardless of the value of `sample_probability`.
+      sample_probability: float in [0, 1], the probability of using the previous
+        sample as the next input instead of the value in `decoder_inputs` when
+        sampling. A value of 0 is equivalent to teacher forcing and 1 indicates
+        full sampling.
       sample_temperature: float, a value to divide the logits by before taking
         their softmax and sampling during non-teacher forced decoding.
-      eos_id: int, the token signaling when the end of a sequence is reached.
+      eos_id: int, the token signalling when the end of a sequence is reached.
       hidden_size: int, the number of hidden dimensions in the encoder and
         decoder LSTMs.
     Returns:
@@ -252,7 +255,8 @@ class Seq2seq(nn.Module):
     # Decode outputs.
     logits, predictions = decoder(
         init_decoder_state, decoder_inputs[:, :-1],
-        teacher_force=teacher_force, sample_temperature=sample_temperature)
+        sample_probability=sample_probability,
+        sample_temperature=sample_temperature)
 
     return logits, predictions
 
@@ -322,12 +326,13 @@ def compute_metrics(logits, labels):
 
 
 @jax.jit
-def train_step(optimizer, batch, rng):
+def train_step(optimizer, batch, sample_probability, rng):
   """Train one step."""
 
   def loss_fn(model):
     """Compute cross-entropy loss."""
-    logits, _ = model(batch['query'], batch['answer'])
+    logits, _ = model(
+        batch['query'], batch['answer'], sample_probability=sample_probability)
     labels = batch['answer'][:, 1:]  # remove '=' start token
     loss = cross_entropy_loss(logits, labels, get_sequence_lengths(labels))
     return loss, logits
@@ -352,7 +357,7 @@ def decode(model, inputs):
   init_decoder_input = onehot(CTABLE.encode('=')[0:1], CTABLE.vocab_size)
   init_decoder_inputs = jnp.tile(init_decoder_input,
                                  (inputs.shape[0], get_max_output_len(), 1))
-  _, predictions = model(inputs, init_decoder_inputs, teacher_force=False)
+  _, predictions = model(inputs, init_decoder_inputs, sample_probability=1.0)
   return predictions
 
 
@@ -371,15 +376,23 @@ def decode_batch(model, batch_size):
 def train_model():
   """Train for a fixed number of steps and decode during training."""
   rng = jax.random.PRNGKey(0)
+
+  def _inv_sigmoid(i, k=1000):
+    return k / (k + jnp.exp(i / k))
+
   with nn.stochastic(rng):
     model = create_model()
     optimizer = create_optimizer(model, FLAGS.learning_rate)
     for step in range(FLAGS.num_train_steps):
       batch = get_batch(FLAGS.batch_size)
-      optimizer, metrics = train_step(optimizer, batch, nn.make_rng())
+      sample_probability = 1 - _inv_sigmoid(step)
+      optimizer, metrics = train_step(
+          optimizer, batch, sample_probability, nn.make_rng())
       if step % FLAGS.decode_frequency == 0:
-        logging.info('train step: %d, loss: %.4f, accuracy: %.2f', step,
-                     metrics['loss'], metrics['accuracy'] * 100)
+        logging.info(
+            'train step: %d, sample prob: %.4f, loss: %.4f, accuracy: %.2f',
+            step, sample_probability, metrics['loss'],
+            metrics['accuracy'] * 100)
         decode_batch(optimizer.target, 5)
     return optimizer.target
 
