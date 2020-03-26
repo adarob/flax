@@ -98,7 +98,6 @@ class TrainTest(absltest.TestCase):
     )
 
   def test_train_one_step(self):
-    '''
     batch = train.get_batch(128)
     rng = random.PRNGKey(0)
 
@@ -110,7 +109,6 @@ class TrainTest(absltest.TestCase):
 
     self.assertLessEqual(train_metrics['loss'], 5)
     self.assertGreaterEqual(train_metrics['accuracy'], 0)
-    '''
 
 if __name__ == '__main__':
   absltest.main()
