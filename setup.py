@@ -22,13 +22,12 @@ version = "0.1.0rc2"
 
 here = os.path.abspath(os.path.dirname(__file__))
 try:
-  README = open(os.path.join(here, "README.md")).read()
+  README = open(os.path.join(here, "README.md"), encoding='utf-8').read()
 except IOError:
   README = ""
 
 install_requires = [
     "numpy>=1.12",
-    "jaxlib>=0.1.41",
     "jax>=0.1.59",
     "matplotlib",  # only needed for tensorboard export
     "dataclasses",  # will only install on py3.6
@@ -36,6 +35,9 @@ install_requires = [
 ]
 
 tests_require = [
+    "pytest",
+    "pytest-xdist",
+    "tensorflow_datasets",
 ]
 
 setup(
@@ -55,7 +57,7 @@ setup(
     keywords="",
     author="Flax team",
     author_email="flax-dev@google.com",
-    url="https://github.com/google-research/flax",
+    url="https://github.com/google/flax",
     license="Apache",
     packages=find_packages(),
     include_package_data=False,

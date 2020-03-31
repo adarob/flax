@@ -258,7 +258,7 @@ class Module(metaclass=_ModuleMeta):
     elif cls._is_shared():
       raise ValueError('Cannot override the name of a shared module')
     if name is None:  # also no default name
-      name = parent.create_name()
+      name = cls.__name__ + '_' + parent.create_name()
     cls._check_name(name, parent)
     if parent.is_init and name not in parent.params:
       rng = _fold_in_str(parent.rng, name)
@@ -632,7 +632,7 @@ class Module(metaclass=_ModuleMeta):
         raise ValueError(f'The name "{name}" is used for both a shared'
                          'and unshared module.')
       if not parent.shared[name]:
-        raise ValueError('A module with named "{name}" already exists.')
+        raise ValueError(f'A module with named "{name}" already exists.')
     parent.shared[name] = shared
 
   @classmethod
@@ -744,7 +744,7 @@ class TruncatedModule(TransparentModule):
       raise ValueError(
           '`wrapped_module` and `truncate_path` are required keyword arguments')
     with capture_module_outputs() as module_outputs:
-      wrapped_module(*args, **kwargs)
+      wrapped_module(*args, **kwargs, name='0')
 
     def lookup_output(path):
       return module_outputs[path]
@@ -1033,7 +1033,7 @@ class Collection:
   def _find_root(self, frame):
     """Find the root frame with respect to the anchor.
 
-    The root frame is defined as the child of anchor 
+    The root frame is defined as the child of anchor
     that is an ancestor of frame.
     The root is used to verify that a Collection does not
     have multiple unnamed roots.
