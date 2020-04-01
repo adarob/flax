@@ -25,6 +25,7 @@ from typing import Any
 import warnings
 
 from . import utils
+from . import stochastic
 from flax import jax_utils
 from flax import serialization
 from flax import struct
@@ -241,7 +242,7 @@ def _fold_in_str(rng, data):
   m.update(data.encode('utf-8'))
   d = m.digest()
   hash_int = int.from_bytes(d[:4], byteorder='big')
-  return jax.random.fold_in(rng, hash_int)
+  return random.fold_in(rng, hash_int)
 
 
 class Module(metaclass=_ModuleMeta):
@@ -376,7 +377,7 @@ class Module(metaclass=_ModuleMeta):
     return PartialModule
 
   @classmethod
-  def create(cls, rng, *args, name=None, **kwargs):
+  def create(cls, _rng, *args, name=None, **kwargs):
     """Create a module instance by evaluating the model.
 
     DEPRECATION WARNING:
@@ -388,7 +389,7 @@ class Module(metaclass=_ModuleMeta):
     Initializer functions can depend both on the shape and the value of inputs.
 
     Args:
-      rng: the random number generator used to initialize parameters.
+      _rng: the random number generator used to initialize parameters.
       *args: arguments passed to the module's apply function
       name: name of this module
       **kwargs: keyword arguments passed to the module's apply function
@@ -400,12 +401,12 @@ class Module(metaclass=_ModuleMeta):
                   " create a `nn.Model` given the module and initialized"
                   " parameters.",
                   DeprecationWarning)
-    y, params = cls.init(rng, *args, name=name, **kwargs)
+    y, params = cls.init(_rng, *args, name=name, **kwargs)
     model = Model(cls, params)
     return y, model
 
   @classmethod
-  def create_by_shape(cls, rng, input_specs, *args, name=None, **kwargs):
+  def create_by_shape(cls, _rng, input_specs, *args, name=None, **kwargs):
     """Create a module instance using only shape and dtype information.
 
     DEPRECATION WARNING:
@@ -418,7 +419,7 @@ class Module(metaclass=_ModuleMeta):
     Initializer functions can depend on the shape but not the value of inputs.
 
     Args:
-      rng: the random number generator used to initialize parameters.
+      _rng: the random number generator used to initialize parameters.
       input_specs: an iterable of (shape, dtype) pairs specifying the inputs
       *args: other arguments passed to the module's apply function
       name: name of this module.
@@ -432,16 +433,16 @@ class Module(metaclass=_ModuleMeta):
                   " initialized parameters.",
                   DeprecationWarning)
 
-    y, params = cls.init_by_shape(rng, input_specs, *args, name=name, **kwargs)
+    y, params = cls.init_by_shape(_rng, input_specs, *args, name=name, **kwargs)
     model = Model(cls, params)
     return y, model
 
   @classmethod
-  def init(cls, rng, *args, name=None, **kwargs):
+  def init(cls, _rng, *args, name=None, **kwargs):
     """Initialize the module parameters.
 
     Args:
-      rng: the random number generator used to initialize parameters.
+      _rng: the random number generator used to initialize parameters.
       *args: arguments passed to the module's apply function
       name: name of this module.
       **kwargs: keyword arguments passed to the module's apply function
@@ -456,7 +457,7 @@ class Module(metaclass=_ModuleMeta):
     if name is None:
       name = cls._default_name()
 
-    frame = _ModuleFrame(name, rng=rng, parent=parent,
+    frame = _ModuleFrame(name, rng=_rng, parent=parent,
                          transparent=cls._is_transparent())
     with cls._with_instance(frame) as instance:
       y = instance.apply(*args, **kwargs)
@@ -464,14 +465,14 @@ class Module(metaclass=_ModuleMeta):
     return y, cls._post_process_params(frame.params)
 
   @classmethod
-  def init_by_shape(cls, rng, input_specs, *args, name=None, **kwargs):
+  def init_by_shape(cls, _rng, input_specs, *args, name=None, **kwargs):
     """Initialize the module parameters.
 
     This method will initialize the module parameters without computation.
     Initializer functions can depend on the shape but not the value of inputs.
 
     Args:
-      rng: the random number generator used to initialize parameters.
+      _rng: the random number generator used to initialize parameters.
       input_specs: an iterable of (shape, dtype) pairs specifying the inputs
       *args: arguments passed to the module's apply function
       name: name of this module.
@@ -479,8 +480,27 @@ class Module(metaclass=_ModuleMeta):
     Returns:
       A pair consisting of the model output and the initialized parameters
     """
+    stochastic_rng = None
+    try:
+      stochastic_rng = stochastic.make_rng()
+    except ValueError:
+      # Either there is no stochastic scope or the current
+      # scope is invalid due to another jax transformation.
+      # In both cases we should not try to lift the stochastic
+      # scope into the lazy evaluation
+      pass
+
     def lazy_init(*inputs):
-      return cls.init(rng, *(inputs + args), name=name, **kwargs)
+      def init_fn():
+        return cls.init(_rng, *(inputs + args), name=name, **kwargs)
+      if stochastic_rng is not None:
+        # Create a new stochastic scope inside the lazy evalution
+        # this way we can use a stochastic scope in combination
+        # with init_by_shape.
+        with stochastic.stochastic(stochastic_rng):
+          return init_fn()
+      else:
+        return init_fn()
     return jax_utils.partial_eval_by_shape(lazy_init, input_specs)
 
   @classmethod
